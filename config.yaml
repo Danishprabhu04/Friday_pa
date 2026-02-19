@@ -1,0 +1,19 @@
+# Friday Phase 1 Configuration
+# ─────────────────────────────
+
+# Language preference for the assistant (english / tamil / both)
+language: both
+
+# System monitoring thresholds (%)
+cpu_threshold: 85
+ram_threshold: 80
+
+# Permission control
+# If true, moderate-risk commands will require explicit approval before execution
+ask_permission_for_moderate: true
+
+# OpenRouter model to use for LLM calls
+openrouter_model: openai/gpt-4o-mini
+
+# Command execution timeout in seconds
+command_timeout: 10
