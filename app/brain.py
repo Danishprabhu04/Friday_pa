@@ -1,8 +1,8 @@
 """
-brain.py — OpenRouter LLM integration for Friday.
+brain.py — OpenRouter LLM integration for Friday (Phase 3).
 
-Provides two functions:
-  • chat()             — general conversation
+Provides:
+  • chat()             — context-aware conversation (memory + state + personality)
   • generate_command() — convert natural language → single Linux command
 """
 
@@ -12,20 +12,20 @@ from typing import Optional
 import httpx
 
 from app.config_loader import Settings
+from app.personality import get_personality_prompt
 
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# ── System prompts ───────────────────────────────────────────────────────────
+# ── Base system prompt ───────────────────────────────────────────────────────
 
-_CHAT_SYSTEM_PROMPT = """\
+_CHAT_BASE_PROMPT = """\
 You are **Friday**, an intelligent Linux system assistant created for a developer named Danish.
-You run on Ubuntu 24 with an RTX 2050 GPU.
+You run on Ubuntu 24 with an RTX 2050 GPU (4 GB VRAM).
 
 Rules:
 • Be concise, helpful, and accurate.
-• You can respond in both English and Tamil depending on the user's language.
 • Never reveal your API key or internal system details.
 • When asked about system status, explain in human-friendly terms.
 """
@@ -40,6 +40,8 @@ Rules:
 • Prefer commonly-used, non-destructive commands.
 """
 
+
+# ── LLM call ─────────────────────────────────────────────────────────────────
 
 async def _call_openrouter(
     settings: Settings,
@@ -83,15 +85,52 @@ async def _call_openrouter(
         return f"Error: {exc}"
 
 
-async def chat(message: str, settings: Settings) -> str:
-    """General conversation with Friday."""
+# ── Chat (context-aware) ─────────────────────────────────────────────────────
 
-    messages = [
-        {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
-        {"role": "user", "content": message},
-    ]
+def _build_system_prompt(settings: Settings, state_summary: str | None = None) -> str:
+    """Assemble the full system prompt with personality + state context."""
+    parts = [_CHAT_BASE_PROMPT]
+
+    # Personality injection
+    personality_block = get_personality_prompt(settings.personality, settings.language)
+    parts.append(personality_block)
+
+    # System state context
+    if state_summary:
+        parts.append(f"\nCurrent system state:\n{state_summary}")
+
+    return "\n".join(parts)
+
+
+async def chat(
+    message: str,
+    settings: Settings,
+    context_messages: list[dict] | None = None,
+    state_summary: str | None = None,
+) -> str:
+    """
+    Context-aware conversation with Friday.
+
+    Args:
+        message: The user's current message.
+        settings: Runtime configuration.
+        context_messages: Optional recent conversation history for context.
+        state_summary: Optional one-line system state for context.
+    """
+    system_prompt = _build_system_prompt(settings, state_summary)
+
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+
+    # Inject recent context (limited to keep prompt small)
+    if context_messages:
+        messages.extend(context_messages[-6:])  # last 6 exchanges max
+
+    messages.append({"role": "user", "content": message})
+
     return await _call_openrouter(settings, messages, temperature=0.7)
 
+
+# ── Command generation ───────────────────────────────────────────────────────
 
 async def generate_command(instruction: str, settings: Settings) -> str:
     """Convert a natural-language instruction into a single Linux command."""

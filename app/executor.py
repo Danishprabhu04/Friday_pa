@@ -1,12 +1,11 @@
 """
-executor.py — Safe command execution pipeline.
+executor.py — Safe command execution pipeline (Phase 3).
 
-Flow:
-  1. User sends natural-language instruction.
-  2. brain.generate_command() turns it into a shell command.
-  3. permission.classify_command() assesses risk.
-  4. If safe → run.  If moderate → check config.  If dangerous → block.
-  5. Output + logs returned to caller.
+Full 4-layer safety chain:
+  1. Permission filter  → classify risk
+  2. Decision engine    → cost + stress + safe-mode check
+  3. Reflection engine  → record outcome (success/failure)
+  4. Memory manager     → store task in DB
 """
 
 import asyncio
@@ -14,59 +13,124 @@ import logging
 
 from app.brain import generate_command
 from app.config_loader import Settings
+from app.decision_engine import decide, Decision
+from app.memory_manager import store_task
+from app.pattern_engine import record_action
 from app.permission import classify_command
+from app.reflection_engine import record_outcome
+from app.state_manager import SystemState
 
 logger = logging.getLogger(__name__)
 
 
-async def execute_instruction(instruction: str, settings: Settings) -> dict:
+async def execute_instruction(
+    instruction: str,
+    settings: Settings,
+    state: SystemState,
+) -> dict:
     """
-    End-to-end: instruction → command → risk check → (optional) execution.
+    End-to-end pipeline:
+      instruction → command → risk → decision → execution → reflection → memory.
 
-    Returns a dict with keys: status, command, risk_level, output, error.
+    Returns a dict with: status, command, risk_level, decision, output, error.
     """
 
-    # Step 1 — Ask the LLM to produce a shell command
+    # ── Layer 0: Generate command from LLM ───────────────────────────────
     command = await generate_command(instruction, settings)
 
     if command.startswith("Error:"):
+        await store_task(instruction, None, "error", None)
+        await record_outcome("failure", f"LLM error: {command}")
         return {
             "status": "error",
             "command": None,
             "risk_level": None,
+            "decision": None,
             "output": None,
             "error": command,
         }
 
-    # Step 2 — Classify risk
+    # ── Layer 1: Permission filter ───────────────────────────────────────
     risk_level = classify_command(command)
 
-    # Step 3 — Act on risk level
-    if risk_level == "dangerous":
+    # ── Layer 2: Decision engine ─────────────────────────────────────────
+    await state.refresh()
+    is_stressed = state.is_system_stressed(settings)
+
+    decision: Decision = decide(
+        instruction=instruction,
+        command=command,
+        risk_level=risk_level,
+        is_stressed=is_stressed,
+        settings=settings,
+    )
+
+    decision_dict = {
+        "action": decision.action,
+        "reason": decision.reason,
+        "estimated_cost": decision.estimated_cost,
+        "suggested_mode": decision.suggested_mode,
+    }
+
+    # Handle non-execute decisions
+    if decision.action == "reject":
         logger.warning("BLOCKED dangerous command: %s", command)
+        await store_task(instruction, command, "blocked", decision.estimated_cost)
+        await record_outcome("blocked", command)
         return {
             "status": "blocked",
             "command": command,
             "risk_level": risk_level,
+            "decision": decision_dict,
             "output": None,
-            "error": "This command has been classified as dangerous and was blocked.",
+            "error": decision.reason,
         }
 
-    if risk_level == "moderate" and settings.ask_permission_for_moderate:
-        logger.info("Permission required for moderate command: %s", command)
+    if decision.action == "ask_permission":
+        logger.info("Permission required: %s", command)
+        await store_task(instruction, command, "permission_required", decision.estimated_cost)
+        await record_outcome("permission_denied", command)
         return {
             "status": "permission_required",
             "command": command,
             "risk_level": risk_level,
+            "decision": decision_dict,
             "output": None,
             "error": None,
         }
 
-    # Step 4 — Execute safe (or approved moderate) command
-    return await _run_command(command, timeout=settings.command_timeout)
+    if decision.action in ("delay", "switch_mode"):
+        logger.info("Decision: %s — %s", decision.action, decision.reason)
+        await store_task(instruction, command, decision.action, decision.estimated_cost)
+        return {
+            "status": decision.action,
+            "command": command,
+            "risk_level": risk_level,
+            "decision": decision_dict,
+            "output": None,
+            "error": None,
+        }
+
+    # ── Execute safe command ─────────────────────────────────────────────
+    state.touch()
+    result = await _run_command(command, timeout=settings.command_timeout, decision=decision_dict)
+
+    # ── Layer 3: Reflection — record outcome ─────────────────────────────
+    if result["status"] == "success":
+        await record_outcome("success", command)
+    else:
+        await record_outcome("failure", f"{result['status']}: {command}")
+
+    # ── Layer 4: Memory — store task ─────────────────────────────────────
+    await store_task(instruction, command, result["status"], decision.estimated_cost)
+
+    # Record pattern for command usage
+    await record_action("command", command.split()[0] if command else "unknown")
+
+    return result
 
 
-async def _run_command(command: str, timeout: int = 10) -> dict:
+async def _run_command(command: str, timeout: int = 10, decision: dict | None = None) -> dict:
     """Run a shell command via subprocess with a timeout."""
 
     logger.info("Executing command: %s", command)
@@ -88,6 +152,7 @@ async def _run_command(command: str, timeout: int = 10) -> dict:
                 "status": "success",
                 "command": command,
                 "risk_level": "safe",
+                "decision": decision,
                 "output": stdout_text,
                 "error": None,
             }
@@ -97,6 +162,7 @@ async def _run_command(command: str, timeout: int = 10) -> dict:
                 "status": "failed",
                 "command": command,
                 "risk_level": "safe",
+                "decision": decision,
                 "output": stdout_text,
                 "error": stderr_text,
             }
@@ -107,6 +173,7 @@ async def _run_command(command: str, timeout: int = 10) -> dict:
             "status": "timeout",
             "command": command,
             "risk_level": "safe",
+            "decision": decision,
             "output": None,
             "error": f"Command timed out after {timeout} seconds.",
         }
@@ -116,6 +183,7 @@ async def _run_command(command: str, timeout: int = 10) -> dict:
             "status": "error",
             "command": command,
             "risk_level": "safe",
+            "decision": decision,
             "output": None,
             "error": str(exc),
         }

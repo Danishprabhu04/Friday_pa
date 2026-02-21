@@ -1,0 +1,13 @@
+[project]
+name = "friday"
+version = "0.2.0"
+description = "Friday — Resource-aware AI assistant backend"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "psutil>=6.0.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+]

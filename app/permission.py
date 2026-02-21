@@ -1,10 +1,12 @@
 """
-permission.py — Risk classification for shell commands.
+permission.py — Risk classification for shell commands (Phase 2).
 
 Levels:
   • safe       — execute immediately
   • moderate   — ask for confirmation (if configured)
   • dangerous  — always block
+
+Phase 2 addition: stress-aware escalation.
 """
 
 import logging
@@ -54,3 +56,21 @@ def classify_command(command: str) -> str:
 
     logger.info("Command classified as %s: %s", level.upper(), command)
     return level
+
+
+def classify_with_stress(command: str, is_stressed: bool) -> str:
+    """
+    Stress-aware classification.
+
+    When the system is under stress, moderate commands are escalated
+    to dangerous (blocked).  Safe commands remain safe.
+    """
+    base_level = classify_command(command)
+
+    if is_stressed and base_level == "moderate":
+        logger.warning(
+            "Escalating '%s' from MODERATE → DANGEROUS (system stressed)", command
+        )
+        return "dangerous"
+
+    return base_level

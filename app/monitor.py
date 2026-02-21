@@ -1,9 +1,11 @@
 """
-monitor.py — System monitoring: CPU, RAM, disk, GPU.
+monitor.py — System monitoring: CPU, RAM, disk, GPU (Phase 2).
+
+Provides full status snapshots as well as quick single-value helpers
+used by state_manager and decision_engine.
 """
 
 import asyncio
-import json
 import logging
 import shutil
 
@@ -11,6 +13,8 @@ import psutil
 
 logger = logging.getLogger(__name__)
 
+
+# ── Full snapshot ────────────────────────────────────────────────────────────
 
 async def get_system_status() -> dict:
     """Return a JSON-serialisable snapshot of system resources."""
@@ -24,6 +28,7 @@ async def get_system_status() -> dict:
         "ram": {
             "total_gb": round(ram.total / (1024 ** 3), 2),
             "used_gb": round(ram.used / (1024 ** 3), 2),
+            "available_mb": round(ram.available / (1024 ** 2), 1),
             "percent": ram.percent,
         },
         "disk": {
@@ -42,6 +47,35 @@ async def get_system_status() -> dict:
     )
     return status
 
+
+# ── Quick helpers (used by state_manager) ────────────────────────────────────
+
+def get_ram_available_mb() -> float:
+    """Return available RAM in megabytes (non-async, instant)."""
+    return round(psutil.virtual_memory().available / (1024 ** 2), 1)
+
+
+async def get_gpu_utilization() -> int | None:
+    """Return GPU utilisation percentage, or None if unavailable."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "nvidia-smi",
+            "--query-gpu=utilization.gpu",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode == 0:
+            return int(stdout.decode().strip())
+    except Exception:
+        pass
+    return None
+
+
+# ── Internal ─────────────────────────────────────────────────────────────────
 
 async def _get_gpu_info() -> dict | None:
     """Query nvidia-smi for GPU stats; returns None if unavailable."""

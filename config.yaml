@@ -1,19 +1,35 @@
-# Friday Phase 1 Configuration
+# Friday Phase 3 Configuration
 # ─────────────────────────────
 
 # Language preference for the assistant (english / tamil / both)
 language: both
 
-# System monitoring thresholds (%)
+# ── System monitoring thresholds (%) ──
 cpu_threshold: 85
 ram_threshold: 80
+gpu_threshold: 90
 
-# Permission control
-# If true, moderate-risk commands will require explicit approval before execution
+# ── Permission control ──
 ask_permission_for_moderate: true
 
-# OpenRouter model to use for LLM calls
+# ── OpenRouter ──
 openrouter_model: openai/gpt-4o-mini
 
-# Command execution timeout in seconds
+# ── Command execution ──
 command_timeout: 10
+
+# ── Self-limiting behaviour ──
+idle_timeout_minutes: 5
+stress_cpu_duration_seconds: 300
+auto_unload: true
+model_unload_timeout_minutes: 10
+
+# ── Phase 3: Autonomous intelligence ──
+personality: professional
+memory_max_rows: 500
+pattern_analysis_interval: 300
+proactive_interval: 600
+reflection_failure_threshold: 5
+safe_mode_max_cost: low
+background_loop_interval: 30
+db_path: data/friday.db
